@@ -9,6 +9,7 @@
   <meta property="og:description" content="Real-time Forex and Crypto technical analysis trading signal bot powered by live public market feeds, RSI(14), EMA(20/50), MACD(12,26,9), and ATR risk-reward calculations." />
   <meta property="og:type" content="website" />
   <meta name="twitter:card" content="summary_large_image" />
+  <link rel="icon" href="/favicon.ico" />
 
   <!-- Fonts: Plus Jakarta Sans + JetBrains Mono -->
   <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -219,18 +220,50 @@
     </section>
 
     <!-- Display Ad Placement (Requested Google AdSense Unit) -->
-    <section aria-label="Advertisement" class="bg-surface border border-slate-800/90 rounded-xl p-4 text-center">
+    <section aria-label="Advertisement" class="bg-surface border border-slate-800/90 rounded-xl p-4 text-center" style="width:100%;">
       <div class="text-[11px] font-medium text-slate-400 mb-2">Advertisement</div>
-      <div class="w-full overflow-hidden">
+      <div id="adSlotWrapper" class="w-full overflow-hidden" style="width:100%; min-height:90px;">
         <!-- Vertical New -->
-        <ins class="adsbygoogle"
-             style="display:block"
+        <ins id="adsensePrimarySlot"
+             class="adsbygoogle"
+             style="display:block; width:100%; min-height:90px;"
              data-ad-client="ca-pub-2269884583846743"
              data-ad-slot="2906167922"
              data-ad-format="auto"
              data-full-width-responsive="true"></ins>
         <script>
-          (adsbygoogle = window.adsbygoogle || []).push({});
+          (function () {
+            var pushed = false;
+            var slot = document.getElementById('adsensePrimarySlot');
+            function tryPushAd() {
+              if (pushed || !slot) return;
+              var width = slot.offsetWidth || (slot.parentElement && slot.parentElement.offsetWidth) || 0;
+              if (width > 0) {
+                pushed = true;
+                try {
+                  (window.adsbygoogle = window.adsbygoogle || []).push({});
+                } catch (_) {}
+              }
+            }
+            if (document.readyState === 'complete') {
+              requestAnimationFrame(tryPushAd);
+            } else {
+              window.addEventListener('load', function () {
+                requestAnimationFrame(tryPushAd);
+              }, { once: true });
+            }
+            if (window.ResizeObserver && slot) {
+              var adObserver = new ResizeObserver(function () {
+                if (pushed) {
+                  adObserver.disconnect();
+                  return;
+                }
+                tryPushAd();
+                if (pushed) adObserver.disconnect();
+              });
+              adObserver.observe(slot.parentElement || slot);
+            }
+          })();
         </script>
       </div>
     </section>
@@ -290,6 +323,7 @@
               <p id="signalConfluenceText" class="text-xs text-slate-400 mt-1">
                 Evaluating 100 candles across RSI, EMA, and MACD
               </p>
+              <p id="signalDivergenceFlag" class="hidden text-xs font-semibold mt-1"></p>
               <p id="signalAlertNotice" class="hidden text-[11px] font-medium text-sky-400 mt-1"></p>
             </div>
             <div id="signalBiasBadge" class="px-3 py-1.5 rounded-md text-xs font-mono font-bold border border-slate-700 bg-elevated text-slate-300 whitespace-nowrap shrink-0">
@@ -416,6 +450,10 @@
             </div>
           </div>
           <p id="rsiReason" class="text-xs text-slate-400 leading-relaxed">--</p>
+          <div class="pt-2 border-t border-slate-800/60 flex items-center justify-between gap-2 text-xs">
+            <span class="text-slate-500">RSI Divergence</span>
+            <span id="rsiDivergenceLabel" class="font-mono font-semibold text-slate-400 tabular-nums">None detected</span>
+          </div>
         </div>
 
         <!-- MACD (12, 26, 9) -->
@@ -684,6 +722,7 @@
 
         signalVerdict: document.getElementById('signalVerdict'),
         signalConfluenceText: document.getElementById('signalConfluenceText'),
+        signalDivergenceFlag: document.getElementById('signalDivergenceFlag'),
         signalAlertNotice: document.getElementById('signalAlertNotice'),
         signalBiasBadge: document.getElementById('signalBiasBadge'),
         levelEntry: document.getElementById('levelEntry'),
@@ -703,6 +742,7 @@
         rsiStateLabel: document.getElementById('rsiStateLabel'),
         rsiBar: document.getElementById('rsiBar'),
         rsiReason: document.getElementById('rsiReason'),
+        rsiDivergenceLabel: document.getElementById('rsiDivergenceLabel'),
 
         macdHistValue: document.getElementById('macdHistValue'),
         macdLineValue: document.getElementById('macdLineValue'),
@@ -1287,6 +1327,125 @@
         return atr;
       }
 
+      function detectRSIDivergence(candles, rsiArr, decimals) {
+        const len = candles.length;
+        const startIdx = Math.max(20, len - 52);
+        const pivotHighs = [];
+        const pivotLows = [];
+
+        // Identify confirmed swing highs and swing lows (2-bar left/right wing)
+        for (let i = startIdx + 2; i <= len - 3; i++) {
+          if (rsiArr[i] === null) continue;
+          const h = candles[i].high;
+          const l = candles[i].low;
+          if (
+            h >= candles[i - 1].high &&
+            h >= candles[i - 2].high &&
+            h > candles[i + 1].high &&
+            h > candles[i + 2].high
+          ) {
+            pivotHighs.push({ idx: i, price: h, rsi: rsiArr[i] });
+          }
+          if (
+            l <= candles[i - 1].low &&
+            l <= candles[i - 2].low &&
+            l < candles[i + 1].low &&
+            l < candles[i + 2].low
+          ) {
+            pivotLows.push({ idx: i, price: l, rsi: rsiArr[i] });
+          }
+        }
+
+        // Also capture the most recent active extremum in the last 4 candles
+        let recentHigh = null;
+        let recentLow = null;
+        for (let i = Math.max(startIdx, len - 4); i < len; i++) {
+          if (rsiArr[i] === null) continue;
+          if (!recentHigh || candles[i].high >= recentHigh.price) {
+            recentHigh = { idx: i, price: candles[i].high, rsi: rsiArr[i] };
+          }
+          if (!recentLow || candles[i].low <= recentLow.price) {
+            recentLow = { idx: i, price: candles[i].low, rsi: rsiArr[i] };
+          }
+        }
+
+        let bullMatch = null;
+        let bearMatch = null;
+
+        // Check Bearish Divergence (Price Higher High, RSI Lower High)
+        const highAnchor = (pivotHighs.length > 0 && len - 1 - pivotHighs[pivotHighs.length - 1].idx <= 8)
+          ? pivotHighs[pivotHighs.length - 1]
+          : recentHigh;
+
+        if (highAnchor) {
+          for (let j = pivotHighs.length - 1; j >= 0; j--) {
+            const prior = pivotHighs[j];
+            const barGap = highAnchor.idx - prior.idx;
+            if (barGap < 4 || barGap > 42) continue;
+            if (highAnchor.price > prior.price && highAnchor.rsi < prior.rsi - 1.5 && prior.rsi >= 52) {
+              bearMatch = { prior, current: highAnchor };
+              break;
+            }
+          }
+        }
+
+        // Check Bullish Divergence (Price Lower Low, RSI Higher Low)
+        const lowAnchor = (pivotLows.length > 0 && len - 1 - pivotLows[pivotLows.length - 1].idx <= 8)
+          ? pivotLows[pivotLows.length - 1]
+          : recentLow;
+
+        if (lowAnchor) {
+          for (let j = pivotLows.length - 1; j >= 0; j--) {
+            const prior = pivotLows[j];
+            const barGap = lowAnchor.idx - prior.idx;
+            if (barGap < 4 || barGap > 42) continue;
+            if (lowAnchor.price < prior.price && lowAnchor.rsi > prior.rsi + 1.5 && prior.rsi <= 48) {
+              bullMatch = { prior, current: lowAnchor };
+              break;
+            }
+          }
+        }
+
+        // If both match, prefer the more recent extremum
+        if (bullMatch && bearMatch) {
+          if (bullMatch.current.idx >= bearMatch.current.idx) {
+            bearMatch = null;
+          } else {
+            bullMatch = null;
+          }
+        }
+
+        if (bullMatch) {
+          const { prior, current } = bullMatch;
+          return {
+            type: 'BULLISH',
+            label: 'Bullish RSI Divergence',
+            reading: `Low ${formatPrice(prior.price, decimals)}→${formatPrice(current.price, decimals)} | RSI ${prior.rsi.toFixed(1)}→${current.rsi.toFixed(1)}`,
+            interpretation: 'Bullish Divergence (Price Lower Low, RSI Higher Low)',
+            impact: 2
+          };
+        }
+
+        if (bearMatch) {
+          const { prior, current } = bearMatch;
+          return {
+            type: 'BEARISH',
+            label: 'Bearish RSI Divergence',
+            reading: `High ${formatPrice(prior.price, decimals)}→${formatPrice(current.price, decimals)} | RSI ${prior.rsi.toFixed(1)}→${current.rsi.toFixed(1)}`,
+            interpretation: 'Bearish Divergence (Price Higher High, RSI Lower High)',
+            impact: -2
+          };
+        }
+
+        return {
+          type: 'NONE',
+          label: 'None detected',
+          reading: 'No active swing divergence',
+          interpretation: 'Price and RSI swing highs/lows aligned',
+          impact: 0
+        };
+      }
+
       function analyzeMarket(allCandles, asset) {
         const closes = allCandles.map((c) => c.close);
         const ema20Arr = computeEMA(closes, 20);
@@ -1315,7 +1474,7 @@
         const prevHist = histogram[prevIdx];
         const atr = atrArr[lastIdx] || (price * 0.01);
 
-        // Confluence Scoring System (-6 to +6)
+        // Confluence Scoring System (-8 to +8 with RSI Divergence)
         let score = 0;
         const factors = [];
 
@@ -1461,6 +1620,16 @@
           impact: macdImpact
         });
 
+        // 4. RSI Divergence Detection (-2 to +2 extra confluence)
+        const rsiDivergence = detectRSIDivergence(allCandles, rsiArr, asset.decimals);
+        score += rsiDivergence.impact;
+        factors.push({
+          name: 'RSI Divergence',
+          reading: rsiDivergence.reading,
+          interpretation: rsiDivergence.interpretation,
+          impact: rsiDivergence.impact
+        });
+
         // Determine Signal Verdict
         let verdict = 'NEUTRAL / HOLD';
         let direction = 'NEUTRAL';
@@ -1545,6 +1714,7 @@
           prevRsi,
           rsiState,
           rsiReason,
+          rsiDivergence,
           macd,
           macdSig,
           hist,
@@ -1689,6 +1859,15 @@
           ? `Mixed signals (${bullishCount} bullish, ${bearishCount} bearish) — wait for clearer alignment.`
           : `${analysis.direction === 'BUY' ? bullishCount : bearishCount} of ${analysis.factors.length} technical conditions aligned.`;
 
+        if (analysis.rsiDivergence && analysis.rsiDivergence.type !== 'NONE') {
+          els.signalDivergenceFlag.textContent = `Flagged: ${analysis.rsiDivergence.label}`;
+          els.signalDivergenceFlag.className = `text-xs font-semibold mt-1 ${
+            analysis.rsiDivergence.type === 'BULLISH' ? 'text-emerald-400' : 'text-rose-400'
+          }`;
+        } else {
+          els.signalDivergenceFlag.classList.add('hidden');
+        }
+
         // Trade Levels
         els.levelEntry.textContent = formatPrice(analysis.entry, d);
         els.levelSl.textContent = formatPrice(analysis.sl, d);
@@ -1722,6 +1901,16 @@
           analysis.rsi <= 30 ? 'bg-emerald-400' : analysis.rsi >= 70 ? 'bg-rose-400' : 'bg-sky-400'
         }`;
         els.rsiReason.textContent = analysis.rsiReason;
+        if (analysis.rsiDivergence) {
+          els.rsiDivergenceLabel.textContent = analysis.rsiDivergence.label;
+          els.rsiDivergenceLabel.className = `font-mono font-semibold tabular-nums ${
+            analysis.rsiDivergence.type === 'BULLISH'
+              ? 'text-emerald-400'
+              : analysis.rsiDivergence.type === 'BEARISH'
+                ? 'text-rose-400'
+                : 'text-slate-400'
+          }`;
+        }
 
         // MACD
         const macdDec = d >= 4 ? 5 : 2;
@@ -2073,6 +2262,7 @@
           `Take Profit 2 (1:3): ${formatRawPrice(a.tp2, d)}`,
           `━━━━━━━━━━━━━━━━━━━━`,
           `RSI(14): ${a.rsi.toFixed(1)} (${a.rsiState})`,
+          `RSI Divergence: ${a.rsiDivergence ? a.rsiDivergence.label : 'None detected'}`,
           `MACD(12,26,9): ${a.macdState}`,
           `Trend: ${a.trendLabel} (EMA20 ${formatRawPrice(a.ema20, d)} / EMA50 ${formatRawPrice(a.ema50, d)})`,
           `Source: ${state.feedSource}`,
